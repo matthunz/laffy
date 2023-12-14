@@ -1,5 +1,9 @@
 use slotmap::{DefaultKey, SlotMap, SparseSecondaryMap};
-use std::{cell::RefCell, rc::Rc, thread};
+use std::{
+    cell::RefCell,
+    rc::{Rc, Weak},
+    thread,
+};
 use taffy::{
     geometry::Size,
     layout::Layout,
@@ -8,32 +12,58 @@ use taffy::{
 };
 use tokio::sync::{mpsc, oneshot};
 
+struct NodeData {
+    parent: Option<Weak<Node>>,
+    children: Vec<NodeRef>,
+    layout: Layout,
+}
+
 pub struct Node {
     key: DefaultKey,
     tree: Tree,
-    layout: RefCell<Layout>,
+    data: RefCell<NodeData>,
 }
 
-impl Node {
+#[derive(Clone)]
+pub struct NodeRef {
+    node: Rc<Node>,
+}
+
+impl NodeRef {
     pub fn layout(&self) -> Layout {
-        *self.layout.borrow()
+        self.node.data.borrow().layout
+    }
+
+    pub fn add_child(&self, child: Self) {
+        self.node
+            .tree
+            .tx
+            .send(Request::AddChild {
+                parent_key: self.node.key,
+                child_key: child.node.key,
+            })
+            .unwrap();
+
+        child.node.data.borrow_mut().parent = Some(Rc::downgrade(&self.node));
+        self.node.data.borrow_mut().children.push(child);
     }
 
     pub async fn measure(&self, available_space: Size<AvailableSpace>) {
         let (tx, rx) = oneshot::channel();
-        self.tree
+        self.node
+            .tree
             .tx
             .send(Request::Layout {
-                key: self.key,
+                key: self.node.key,
                 available_space,
                 tx,
             })
             .unwrap();
         let changes = rx.await.unwrap();
 
-        let tree = self.tree.inner.borrow_mut();
+        let tree = self.node.tree.inner.borrow_mut();
         for (key, layout) in changes {
-            *tree.nodes[key].layout.borrow_mut() = layout;
+            tree.nodes[key].data.borrow_mut().layout = layout;
         }
     }
 }
@@ -42,6 +72,10 @@ enum Request {
     Insert {
         key: DefaultKey,
         style: Style,
+    },
+    AddChild {
+        parent_key: DefaultKey,
+        child_key: DefaultKey,
     },
     Layout {
         key: DefaultKey,
@@ -83,6 +117,16 @@ impl Tree {
                                 layout: Layout::new(),
                             },
                         );
+                    }
+                    Request::AddChild {
+                        parent_key,
+                        child_key,
+                    } => {
+                        let parent_layout_key = nodes[parent_key].layout_key;
+                        let child_layout_key = nodes[child_key].layout_key;
+                        taffy
+                            .add_child(parent_layout_key, child_layout_key)
+                            .unwrap();
                     }
                     Request::Layout {
                         key,
@@ -154,13 +198,17 @@ impl Tree {
         }
     }
 
-    pub fn node(&self) -> Rc<Node> {
+    pub fn node(&self) -> NodeRef {
         let mut cell = None;
         let key = self.inner.borrow_mut().nodes.insert_with_key(|key| {
             let node = Rc::new(Node {
                 key,
                 tree: self.clone(),
-                layout: RefCell::new(Layout::new()),
+                data: RefCell::new(NodeData {
+                    parent: None,
+                    layout: Layout::new(),
+                    children: Vec::new(),
+                }),
             });
             cell = Some(node.clone());
             node
@@ -176,6 +224,8 @@ impl Tree {
             })
             .unwrap();
 
-        cell.unwrap()
+        NodeRef {
+            node: cell.unwrap(),
+        }
     }
 }

@@ -8,7 +8,10 @@ async fn main() {
     let parent = tree.node();
 
     let a = tree.node();
-    let _b = tree.node();
+    parent.add_child(a.clone());
+
+    let b = tree.node();
+    parent.add_child(b);
 
     parent.measure(Size::MAX_CONTENT).await;
 
