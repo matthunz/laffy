@@ -1,15 +1,16 @@
-use laffy::LayoutTree;
-use taffy::{geometry::Size, style::Style, style_helpers::TaffyMaxContent};
+use laffy::Tree;
+use taffy::{geometry::Size, style_helpers::TaffyMaxContent};
 
-fn main() {
-    let tree = LayoutTree::default();
+#[tokio::main]
+async fn main() {
+    let tree = Tree::new();
 
-    let node = tree.insert(Style {
-        size: Size::from_points(100., 100.),
-        ..Default::default()
-    });
+    let parent = tree.node();
 
-    node.measure(Size::MAX_CONTENT);
+    let a = tree.node();
+    let _b = tree.node();
 
-    dbg!(node.layout());
+    parent.measure(Size::MAX_CONTENT).await;
+
+    dbg!(a.layout());
 }
