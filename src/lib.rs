@@ -1,9 +1,15 @@
 use slotmap::DefaultKey;
 use std::{
     cell::{Cell, RefCell},
+    collections::VecDeque,
     rc::{Rc, Weak},
 };
-use taffy::{style::Style, Taffy};
+use taffy::{
+    geometry::Size,
+    layout::Layout,
+    style::{AvailableSpace, Style},
+    Taffy,
+};
 
 #[derive(Default, Clone)]
 pub struct LayoutTree {
@@ -18,6 +24,7 @@ impl LayoutTree {
             parent: RefCell::default(),
             children: RefCell::default(),
             tree: self.clone(),
+            layout: RefCell::new(Layout::new()),
         };
         Rc::new(node)
     }
@@ -29,6 +36,7 @@ pub struct Node {
     children: RefCell<Vec<Rc<Self>>>,
     // TODO weak?
     tree: LayoutTree,
+    layout: RefCell<Layout>,
 }
 
 impl Node {
@@ -61,6 +69,64 @@ impl Node {
             .remove_child(self.key, child.key)
             .unwrap();
         child
+    }
+
+    pub fn measure(&self, available_space: Size<AvailableSpace>) {
+        let mut taffy = self.tree.taffy.borrow_mut();
+        taffy.compute_layout(self.key, available_space).unwrap();
+
+        enum Item {
+            Push(Rc<Node>),
+            Pop,
+        }
+
+        let mut stack: Vec<_> = self
+            .children
+            .borrow()
+            .iter()
+            .map(|child| Item::Push(child.clone()))
+            .collect();
+
+        let mut layouts: Vec<Layout> = Vec::new();
+
+        let mut layout = *taffy.layout(self.key).unwrap();
+        if let Some(parent_layout) = layouts.last() {
+            layout.location.x += parent_layout.location.x;
+            layout.location.x += parent_layout.location.x;
+        }
+
+        *self.layout.borrow_mut() = layout;
+        layouts.push(layout);
+
+        while let Some(item) = stack.pop() {
+            match item {
+                Item::Push(node) => {
+                    let mut layout = *taffy.layout(node.key).unwrap();
+                    if let Some(parent_layout) = layouts.last() {
+                        layout.location.x += parent_layout.location.x;
+                        layout.location.x += parent_layout.location.x;
+                    }
+
+                    layouts.push(layout);
+                    *node.layout.borrow_mut() = layout;
+
+                    stack.push(Item::Pop);
+                    stack.extend(
+                        node.children
+                            .borrow()
+                            .iter()
+                            .map(|child| Item::Push(child.clone())),
+                    )
+                }
+                Item::Pop => {
+                    layouts.pop();
+                }
+            }
+        }
+    }
+
+    pub fn layout(&self) -> Layout {
+        *self.layout.borrow()
     }
 }
 
